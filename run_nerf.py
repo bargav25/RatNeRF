@@ -12,16 +12,16 @@ from tqdm import tqdm, trange
 from core.trainer import *
 from core.utils.ray_utils import *
 from core.utils.run_nerf_helpers import *
-from core.utils.evaluation_helpers import evaluate_metric, evaluate_pampjpe_from_smpl_params
-from core.utils.skeleton_utils import draw_skeletons_3d
+from core.utils.evaluation_helpers import evaluate_metric
 
 from core.raycasters import create_raycaster
-from core.pose_opt import create_popt
 from core.load_data import load_data
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = True
+
+torch.set_default_dtype(torch.float)
 
 
 @torch.no_grad()
@@ -97,6 +97,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs,
                               bones=bone_input, **render_kwargs)
             rgb, disp, acc = ret_dict['rgb_map'], ret_dict['disp_map'], ret_dict['acc_map']
 
+            # print("rgb from render function: ", rgb)
+
         if valid_idxs is not None:
             # in this case, we only render the rays that are within the foreground or cylinder
             valid_idx = valid_idxs[i]
@@ -111,6 +113,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs,
                     bg = torch.tensor(bg_imgs[0]).permute(2, 0, 1)[None]
                 rgb_img = F.interpolate(bg, size=(h, w), mode='bilinear',
                                    align_corners=False)[0].permute(1, 2, 0).view(h * w, 3)
+
+                # print("rgb_img in bg block: ", rgb_img)
             else:
                 rgb_img = torch.zeros(h * w, 3) if not white_bkgd else torch.ones(h * w, 3)
             disp_img = torch.zeros(h * w)
@@ -141,6 +145,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs,
     disps[disps_nan] = 0.
     if ret_acc:
         accs = np.stack(accs, 0)
+
+    # print("## RGB:", rgbs)
 
     return rgbs, disps, accs, valid_idxs, bboxes
 
@@ -179,8 +185,6 @@ def render_testset(poses, hwf, args, render_kwargs, kps=None, skts=None, cyls=No
 
     return metrics, rgbs, disps
 
-
-
 def config_parser():
 
     import configargparse
@@ -208,13 +212,13 @@ def config_parser():
 
     parser.add_argument("--N_rand", type=int, default=32*32*4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=5e-4,
+    parser.add_argument("--lrate", type=float, default=1e-4,
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250,
                         help='exponential learning rate decay (in args.decay_unit (default=1000) steps)')
     parser.add_argument("--lrate_decay_rate", type=float, default=0.1,
                         help='learning rate decay')
-    parser.add_argument("--decay_unit", type=int, default=1000,
+    parser.add_argument("--decay_unit", type=int, default=500,
                         help='number of steps until the next decay happen')
     parser.add_argument("--weight_decay", type=float, default=None,
                         help='weight decay to apply on the nerf model')
@@ -258,7 +262,7 @@ def config_parser():
                         help='loss in yuv space instead of rgb')
 
     # rendering options
-    parser.add_argument("--density_scale", type=float, default=1.0,
+    parser.add_argument("--density_scale", type=float, default=0.01,
                        help='to scale the density')
     parser.add_argument("--N_samples", type=int, default=64,
                         help='number of coarse samples per ray')
@@ -272,7 +276,7 @@ def config_parser():
                         help='use full 5D input instead of 3D')
     parser.add_argument("--i_embed", type=int, default=0,
                         help='set 0 for default positional encoding, -1 for none')
-    parser.add_argument("--multires", type=int, default=10,
+    parser.add_argument("--multires", type=int, default=25,
                         help='log2 of max freq for positional encoding (kp encoding)')
     parser.add_argument("--multires_pts", type=int, default=5,
                         help='log2 of max freq for positional encoding (mapped location)')
@@ -314,39 +318,6 @@ def config_parser():
     parser.add_argument("--framecode_size", type=int, default=16,
                         help='size of per-view frame code')
 
-    # pose optimization options
-    parser.add_argument("--opt_rot6d",action='store_true',
-                        help='use continuous rotation matrix')
-    parser.add_argument("--opt_posecode", action='store_true',
-                        help='jointly optimize per-pose code')
-    parser.add_argument("--opt_pose", action='store_true',
-                        help='jointly optimize pose')
-    parser.add_argument("--opt_pose_stop", type=int, default=None,
-                        help='stop updating after this many steps')
-    parser.add_argument("--opt_pose_coef", type=float, default=0.,
-                        help='regularize so that the optimized pose wouldn\'t be too far from the original')
-    parser.add_argument("--opt_pose_tol", type=float, default=0.,
-                        help='tolerance of pose adjustment')
-    parser.add_argument("--opt_pose_type", type=str, default="B",
-                        help="type of objective to use for pose optimization")
-    parser.add_argument("--opt_pose_step", type=int, default=1,
-                        help='frequency of updating parameters')
-    parser.add_argument("--opt_pose_lrate", type=float, default=5e-4,
-                        help='learning rate for pose update')
-    parser.add_argument("--opt_pose_lrate_decay", type=int, default=250,
-                        help='exponential step size decay for pose optimizer (in opt_pose_decay steps)')
-    parser.add_argument("--opt_pose_decay_rate", type=float, default=1.0,
-                        help='exponential decay rate')
-    parser.add_argument("--opt_pose_warmup", type=int, default=0,
-                        help='wait this amount of iteration before we optimizing keypoints')
-    parser.add_argument("--opt_pose_decay_unit", type=int, default=400,
-                        help='unit of decay for opt pose')
-    parser.add_argument("--opt_pose_cache", action='store_true',
-                        help='use cache for slight speed up lol')
-    parser.add_argument("--opt_pose_joint", action='store_true',
-                        help='jointly learn NeRF and pose when pose_turn == True')
-    parser.add_argument("--testopt", action='store_true',
-                        help='doing test time optimization only, no NeRF update')
 
     # additional network
     parser.add_argument("--use_bgnet", action='store_true',
@@ -402,6 +373,17 @@ def config_parser():
     parser.add_argument("--pts_tr_type", type=str, default="local",
                         help='type of transformation to apply on 3D world points')
 
+    parser.add_argument("--N_sample_images", type=int, default=8,
+                        help='number of images to sample rays from')
+    parser.add_argument("--image_batching", action='store_true',
+                        help='sample rays from N_sample images')
+    parser.add_argument("--mask_image", action='store_true',
+                        help='mask out pixels that are not in the foreground when providing image target')
+    parser.add_argument("--patch_size", type=int, default=1,
+                        help='sample patches of rays from the image')
+    parser.add_argument("--load_refined", action='store_true',
+                        help='load refined poses for training')
+
     # surreal dataset option
     parser.add_argument("--train_skip", type=int, default=1,
                         help="skip animated frames in surreal dataset")
@@ -429,11 +411,8 @@ def config_parser():
                         help='steps (in 1000) to increase the temperature parameter of cutoff by cutoff_rate')
     parser.add_argument("--cutoff_rate", type=float, default=10.,
                         help='exponential cutoff temperature increase')
-
-    parser.add_argument("--cutoff_bones", action='store_true',
-                        help='apply cutoff to bone rotations')
-    parser.add_argument("--cutoff_ancestors", type=int, default=5,
-                        help='numbers of ancestors to keep along the kinematic chain when doing bone cutoff')
+                        
+                        
 
     parser.add_argument("--freq_schedule", action='store_true',
                          help='schedule frequencies as in BARF')
@@ -442,33 +421,6 @@ def config_parser():
     parser.add_argument("--init_freq", type=float, default=0.,
                         help='initial frequencies that are enabled')
 
-    # h36m dataset
-    # TODO: enable this
-    parser.add_argument("--multiview", action='store_true',
-                        help='use multiview optimization')
-    # TODO: REMOVE
-    parser.add_argument("--training_res", type=float, default=1.0,
-                        help='resize training images by this amount')
-
-    parser.add_argument("--val_seq", nargs="+", type=int, default=[6, 18],
-                        help='list of sequence number for validation')
-    #parser.add_argument("--rand_train_kps", type=int, default=None,
-    #                    help='randomly select a number of kps for training (note: for fixed random seq for 180 and 420)')
-    parser.add_argument("--rand_train_kps", type=str, default=None,
-                        help='randomly select a number of kps for training (note: for fixed random seq for 180 and 420)')
-
-
-    parser.add_argument("--N_sample_images", type=int, default=8,
-                        help='number of images to sample rays from')
-    parser.add_argument("--image_batching", action='store_true',
-                        help='sample rays from N_sample images')
-    parser.add_argument("--mask_image", action='store_true',
-                        help='mask out pixels that are not in the foreground when providing image target')
-    parser.add_argument("--patch_size", type=int, default=1,
-                        help='sample patches of rays from the image')
-    parser.add_argument("--load_refined", action='store_true',
-                        help='load refined poses for training')
-
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
                         help='frequency of console printout and metric loggin')
@@ -476,7 +428,7 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_pose_weights", type=int, default=2000,
                         help='frequency of saving pose weights')
-    parser.add_argument("--i_testset", type=int, default=50000,
+    parser.add_argument("--i_testset", type=int, default=10000,
                         help='frequency of testset saving')
     parser.add_argument("--i_video", type=int, default=10000,
                         help='frequency of render_poses video saving')
@@ -490,11 +442,11 @@ def config_parser():
 
 def train():
 
+
     parser = config_parser()
     args = parser.parse_args()
 
     train_loader, render_data, data_attrs = load_data(args)
-    skel_type = data_attrs['skel_type']
     hwf = data_attrs["hwf"]
     H, W, focal = hwf
     print("Loader initialized.")
@@ -517,10 +469,10 @@ def train():
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer, loaded_ckpt = create_raycaster(args, data_attrs, device=device)
     global_step = start
 
+
+
     popt_kwargs, pose_optimizer = None, None
-    if args.opt_pose:
-        gt_kps = data_attrs['gt_kp3d']
-        pose_optimizer, popt_kwargs = create_popt(args, data_attrs, ckpt=loaded_ckpt, device=device)
+
     print('done creating popt')
 
     N_iters = args.n_iters + 1
@@ -535,7 +487,11 @@ def train():
                       popt_kwargs, device=device)
 
     train_iter = iter(train_loader)
+    
     for i in trange(start, N_iters):
+
+        torch.cuda.empty_cache() #added 
+
         time0 = time.time()
         batch = next(train_iter)
         loss_dict, stats = trainer.train_batch(batch, i, global_step)
@@ -545,28 +501,22 @@ def train():
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             trainer.save_nerf(path, global_step)
 
-        save_opt_pose = args.opt_pose and ((args.opt_pose_stop is None) or (args.opt_pose_stop > i))
-        if (i % args.i_pose_weights == 0) and save_opt_pose:
-            path = os.path.join(basedir, expname, 'pose_weights_{:06d}.tar'.format(i))
-            trainer.save_popt(path, i)
-
 
         # TODO: deal with this
-        if i % args.i_testset==0 and i > 0:
-            if args.opt_pose and render_data["kp_idxs"] is not None:
-                popt_layer = popt_kwargs['popt_layer']
-                with torch.no_grad():
-                    kp_val, bone_val, skt_val, _, _ = popt_layer(render_data["kp_idxs"])
-            else:
-                kp_val = torch.tensor(render_data["kp3d"]).to(device)
-                skt_val = torch.tensor(render_data["skts"]).to(device)
-                bone_val = torch.tensor(render_data["bones"]).to(device)
+        if i == 10 or (i % args.i_testset==0 and i > 0):
+
+            kp_val = torch.tensor(render_data["kp3d"]).to(device)
+            skt_val = torch.tensor(render_data["skts"]).to(device)
+            bone_val = torch.tensor(render_data["bones"]).to(device)
 
             pose_val = torch.tensor(render_data["c2ws"]).to(device)
 
             gt_imgs = render_data["imgs"]
             gt_masks = render_data["fgs"]
             bg_imgs = render_data["bgs"]
+
+
+            # print("bg_imgs from DataLoader: ", bg_imgs)
             bg_indices = render_data.get("bg_idxs", None)
             centers = render_data['center']
             cams_val = torch.tensor(render_data["cam_idxs"]) if args.opt_framecode else None
@@ -574,6 +524,7 @@ def train():
             subject_val = torch.tensor(subject_val) if subject_val is not None else None
 
             moviebase = os.path.join(basedir, expname, '{}_val_{:06d}_'.format(expname, i))
+
             # Intentionally not feeding cyl here to speed ikt up
             if bg_indices is not None:
                 masked_gts = gt_imgs * gt_masks + (1 - gt_masks) * bg_imgs[bg_indices]
@@ -587,17 +538,14 @@ def train():
                                                   bg_imgs=bg_imgs, bg_indices=bg_indices, eval_metrics=True, eval_both=True)
 
             fps  = 5
+
+            # Add the video
             writer.add_video("Val/ValRGB", torch.tensor(rgbs).permute(0, 3, 1, 2)[None], i, fps=fps)
-            writer.add_video("Val/ValDIPS", torch.tensor(disps).permute(0, 3, 1, 2)[None], i, fps=fps)
-            if args.opt_pose:
-                RH, RW, Rfocals = render_data["hwf"]
-                # set the resolution right!
-                if args.render_factor != 0:
-                    RH, RW = RH // args.render_factor, RW // args.render_factor
-                    Rfocals = Rfocals / args.render_factor
-                skel_imgs = draw_skeletons_3d((rgbs * 255).astype(np.uint8), kp_val.cpu().numpy(), pose_val.cpu().numpy(),
-                                              RH, RW, Rfocals)
-                writer.add_video("Val/Skeleton", torch.tensor(skel_imgs).permute(0, 3, 1, 2)[None], i, fps=fps)
+
+            disps_tensor = torch.from_numpy(disps)
+            rgb_disps = torch.cat([disps_tensor] * 3, dim=-1)
+            writer.add_video("Val/ValDIPS", rgb_disps.permute(0, 3, 1, 2)[None], i, fps=fps)
+
             writer.add_scalar("Val/PSNR", metrics["psnr"], i)
             writer.add_scalar("Val/SSIM", metrics["ssim"], i)
 

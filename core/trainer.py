@@ -69,6 +69,8 @@ def batchify_rays(rays_flat, chunk=1024*32, ray_caster=None, **kwargs):
     for i in range(0, rays_flat.shape[0], chunk):
         batch_kwargs = {k: kwargs[k][i:i+chunk] if torch.is_tensor(kwargs[k]) else kwargs[k]
                         for k in kwargs}
+
+        
         ret = ray_caster(rays_flat[i:i+chunk], **batch_kwargs)
         for k in ret:
             if k not in all_ret:
@@ -237,7 +239,7 @@ class Trainer:
         batch = dict_to_device(batch, self.device)
 
         # step 1a: get keypoint/human poses data
-        popt_detach = not (args.opt_pose_stop is None or i < args.opt_pose_stop)
+        popt_detach = True
         kp_args, extra_args = self.get_kp_args(batch, detach=popt_detach)
 
         # step 1b: get other args for forwarding
@@ -249,9 +251,9 @@ class Trainer:
 
         # step 3: loss computation and updates
         loss_dict, stats = self.compute_loss(batch, preds, kp_opts={**kp_args, **extra_args},
-                                             popt_detach=popt_detach or not args.opt_pose)
+                                             popt_detach=popt_detach)
 
-        optim_stats = self.optimize(loss_dict['total_loss'], i, popt_detach or not args.opt_pose)
+        optim_stats = self.optimize(loss_dict['total_loss'], i, popt_detach)
 
         # step 4: rate decay
         new_lrate, _ = decay_optimizer_lrate(args.lrate, args.lrate_decay,
@@ -290,7 +292,7 @@ class Trainer:
         extras = {}
         if self.popt_kwargs is None or self.popt_kwargs['popt_layer'] is None:
             return self._create_kp_args_dict(kps=batch['kp3d'], skts=batch['skts'],
-                                             bones=batch['bones'], cyls=batch['cyls']), extras
+                                             bones=batch['kp3d'], cyls=None), extras
 
         kp_idx = batch['kp_idx']
         if torch.is_tensor(kp_idx):
@@ -333,9 +335,6 @@ class Trainer:
         if 'rgb0' in preds:
             results.append(self._compute_nerf_loss(batch, preds['rgb0'], preds['acc0'], coarse=True))
 
-        # need to update human poses, computes it.
-        if not popt_detach:
-            results.append(self._compute_kp_loss(batch, kp_opts))
 
         # collect losses and stats
         loss_dict, stats = {}, {}
@@ -379,67 +378,6 @@ class Trainer:
 
         return loss_dict, {stat_tag: psnr}
 
-    def _compute_kp_loss(self, batch, kp_opts):
-
-        args = self.args
-        anchors = self.popt_kwargs['popt_anchors']
-        kp_idx = batch['kp_idx']
-
-        # shapes (N_rays, N_joints, *)
-        if args.opt_rot6d:
-            reg_bones = anchors['rots'][kp_idx, ..., :3, :2].flatten(start_dim=-2)
-            bones = kp_opts['rots'][..., :3, :2].flatten(start_dim=-2)
-        else:
-            reg_bones = anchors['bones'][kp_idx]
-            bones = kp_opts['bones']
-        assert len(reg_bones) == len(bones)
-
-        # loss = 0 if bone_loss < tol
-        # loss = bone_loss - tol otherwise
-        tol = args.opt_pose_tol
-        kp_loss = (reg_bones - bones).pow(2.)[:, 1:] # exclude root (idx = 0)
-        loss_mask = (kp_loss > tol).float()
-        kp_loss = torch.lerp(torch.zeros_like(kp_loss),kp_loss-tol, loss_mask).sum(-1)
-        kp_loss = kp_loss.mean() * args.opt_pose_coef
-
-        loss_dict = {'kp_loss': kp_loss}
-        # TODO: add temporal loss
-        if args.use_temp_loss:
-            popt_layer = self.popt_kwargs['popt_layer']
-            # obtain indidces of previous/next pose
-            kp_idx_prev = batch['kp_idx'] - 1
-            kp_idx_next = (batch['kp_idx'] + 1) % len(popt_layer.bones)
-            if torch.is_tensor(kp_idx_prev):
-                kp_idx_prev = kp_idx_prev.cpu().numpy()
-                kp_idx_next = kp_idx_next.cpu().numpy()
-
-            # obtain optimized prev/next poses
-            prev_kps, prev_bones, _, _, prev_rots = popt_layer(kp_idx_prev)
-            next_kps, next_bones, _, _, next_rots = popt_layer(kp_idx_next)
-
-            if args.opt_rot6d:
-                prev_bones = prev_rots[..., :3, :2].flatten(start_dim=-2)
-                next_bones = next_rots[..., :3, :2].flatten(start_dim=-2)
-
-            # detach the regualizer
-            prev_kps, prev_bones = prev_kps.detach(), prev_bones.detach()
-            next_kps, next_bones = next_kps.detach(), next_bones.detach()
-            temp_valid = batch['temp_val']
-            kps = kp_opts['kp_batch']
-
-            ang_vel = ((bones - prev_bones) - (next_bones - bones)).pow(2.).sum(-1)
-            joint_vel = ((kps - prev_kps) - (next_kps - kps)).pow(2.).sum(-1)
-            temp_loss = (ang_vel + joint_vel) * temp_valid[..., None]
-            temp_loss = temp_loss.mean() * args.temp_coef
-
-            loss_dict['temp_loss'] = temp_loss
-
-        # mean per-joint change
-        pjpc = (anchors['kps'][kp_idx] - kp_opts['kp_batch'].detach()).pow(2.).sum(-1).pow(0.5)
-        mpjpc = pjpc.mean() / args.ext_scale
-
-        return loss_dict, {'MPJPC': mpjpc}
-
     def _optim_step(self):
         '''
         step the optimizers for per-iteration parameter updates.
@@ -455,32 +393,11 @@ class Trainer:
         popt_detach: True if no need to update poses
         '''
         args = self.args
-
-        # no pose optimization required, just backward.
-        if popt_detach:
-            loss.backward()
-            total_norm, avg_norm = get_gradnorm(self.render_kwargs_train['ray_caster'])
-            self._optim_step()
-            return {'total_norm': total_norm, 'avg_norm': avg_norm}
-
-        # only need to retain comp. graph if step between pose update > 1
-        retain_graph = args.opt_pose_cache and args.opt_pose_step > 1
-        loss.backward(retain_graph=retain_graph)
-
-        # reset gradient immediately after parameter update
-        self._optim_step()
-
+        loss.backward()
         total_norm, avg_norm = get_gradnorm(self.render_kwargs_train['ray_caster'])
-
-        # update pose after enough gradient accumulation
-        if i % args.opt_pose_step == 0:
-            self.pose_optimizer.step()
-            self.pose_optimizer.zero_grad()
-
-            if args.opt_pose_cache:
-                self.popt_kwargs['popt_layer'].update_cache()
-
+        self._optim_step()
         return {'total_norm': total_norm, 'avg_norm': avg_norm}
+
 
     def save_nerf(self, path, global_step):
         '''Save all state dict.
@@ -504,14 +421,3 @@ class Trainer:
             **ray_caster.module.state_dict(),
         }, path)
         print('Saved checkpoints at', path)
-
-    def save_popt(self, path, global_step):
-        '''Save pose optimization outcomes
-        '''
-        args = self.args
-        torch.save({'global_step': global_step,
-                    'poseopt_layer_state_dict': self.popt_kwargs['popt_layer'].state_dict(),
-                    'poseopt_anchors': self.popt_kwargs['popt_anchors'],
-                    }, path)
-        print('Saved pose at', path)
-

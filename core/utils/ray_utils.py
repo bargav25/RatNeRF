@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .skeleton_utils import get_kp_bounding_cylinder, cylinder_to_box_2d, swap_mat, nerf_c2w_to_extrinsic
+from .skeleton_utils import get_kp_bounding_cylinder, cylinder_to_box_2d, nerf_c2w_to_extrinsic
 
 # Ray helpers
 def get_rays(H, W, focal, c2w, center=None):
@@ -82,34 +82,25 @@ def ndc_rays(H, W, focal, near, rays_o, rays_d):
 
 def kp_to_valid_rays(poses, H, W, focal, kps=None, cylinder_params=None,
                      skts=None, centers=None, ext_scale=0.00035):
+
     if cylinder_params is None:
         assert kps is not None
         kps_np = kps.cpu().numpy()
-        #expand_ratio = 1.10
         bot_expand_ratio = 1.10
-        # For MonoPerfCap Evaluation
         top_expand_ratio = 1.60
-        # For Surreal
-        #top_expand_ratio = 1.10
         extend_mm = 250
 
-        # neuralbody
-        #bot_expand_ratio = 1.0
-        #top_expand_ratio = 1.1
-        #extend_mm = 100
-        cylinder_params = get_kp_bounding_cylinder(kps_np, ext_scale=ext_scale,
-                                                   extend_mm=extend_mm,
-                                                   top_expand_ratio=top_expand_ratio,
-                                                   bot_expand_ratio=bot_expand_ratio,
-                                                   head='-y')
+        cylinder_params = get_kp_bounding_cylinder(
+            kps_np, ext_scale=ext_scale, extend_mm=extend_mm,
+            top_expand_ratio=top_expand_ratio, bot_expand_ratio=bot_expand_ratio, head='-y'
+        )
         cylinder_params = torch.FloatTensor(cylinder_params).to(kps.device)
 
     valid_idxs = []
     rays = []
     bboxes = []
+
     for i, c2w in enumerate(poses):
-        # assume #kp <= #poses,
-        # and we want to render images from the same pose consecutively
         cyl_idx = i % kps.shape[0]
         cyl_param = cylinder_params[cyl_idx]
         f = focal if isinstance(focal, float) else focal[i]
@@ -119,19 +110,30 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, cylinder_params=None,
 
         ray_o, ray_d = get_rays(h, w, f, c2w, center=center)
 
-        #w2c = np.linalg.inv(swap_mat(c2w.cpu().numpy()))
         w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())
-        tl, br, _ = cylinder_to_box_2d(cyl_param.cpu().numpy(), [h, w, f], w2c,
-                                       center=center)
+        tl, br, _ = cylinder_to_box_2d(cyl_param.cpu().numpy(), [h, w, f], w2c, center=center)
+
+        # Clip bounding box to ensure it fits within the image dimensions
+        tl = np.clip(tl, 0, [w, h])
+        br = np.clip(br, 0, [w, h])
+
+        # If the bounding box is invalid, fall back to the full image range
+        if tl[1] >= br[1] or tl[0] >= br[0]:
+            print(f"Invalid bounding box for pose {i}. Falling back to full image.")
+            tl, br = [0, 0], [w, h]  # Use the entire image if bbox is invalid
 
         h_range = torch.arange(tl[1], br[1])
         w_range = torch.arange(tl[0], br[0])
-        valid_h, valid_w = torch.meshgrid(h_range, w_range)
-        valid_idx =  (valid_h * w + valid_w).view(-1)
+        valid_h, valid_w = torch.meshgrid(h_range, w_range, indexing='ij')
+        valid_idx = (valid_h * w + valid_w).view(-1)
 
         rays.append((ray_o.view(-1, 3)[valid_idx], ray_d.view(-1, 3)[valid_idx]))
         valid_idxs.append(valid_idx)
         bboxes.append((tl, br))
+
+        print(f"Pose {i}: Valid indices count = {valid_idx.numel()}")
+
+    print("Valid indices across all poses:", valid_idxs)
 
     return rays, valid_idxs, cylinder_params, bboxes
 

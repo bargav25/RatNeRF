@@ -203,4 +203,3 @@ class NeRF(nn.Module):
 
         return {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map,
                 'weights': weights, 'alpha': alpha}
-

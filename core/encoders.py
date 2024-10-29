@@ -2,10 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from .utils.skeleton_utils import rot6d_to_rotmat, axisang_to_rot, axisang_to_quat, calculate_angle
+from .utils.skeleton_utils import calculate_angle
 
 # SKT (skeleton transformation-related)
 def transform_batch_pts(pts, skt):
+
+    skt = skt.float()  # Convert skt to float32
 
     N_rays, N_samples = pts.shape[:2]
     NJ = skt.shape[-3]
@@ -23,6 +25,8 @@ def transform_batch_pts(pts, skt):
     return mm[..., :-1] # don't need the homogeneous part
 
 def transform_batch_rays(rays_o, rays_d, skt):
+
+    skt = skt.float()
 
     # apply only the rotational part
     N_rays, N_samples = rays_d.shape[:2]
@@ -119,6 +123,7 @@ class RelDistEncoder(BaseEncoder):
         '''
         if pts_t is not None:
             return torch.norm(pts_t, dim=-1, p=2)
+
         return torch.norm(pts[:, :, None] - kps[:, None], dim=-1, p=2)
 
 class RelPosEncoder(BaseEncoder):

@@ -12,7 +12,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from .ray_utils import kp_to_valid_rays
 from .run_nerf_helpers import to8b
-from .skeleton_utils import axisang_to_rot, nerf_bones_to_smpl, world_to_cam
+from .skeleton_utils import world_to_cam
 
 
 DEFAULT_SIZE_GUIDANCE = {
@@ -313,6 +313,18 @@ def evaluate_metric(rgbs, gt_imgs, disps=None, gt_masks=None, valid_idxs=None, p
     else:
         th_rgbs = th_rgbs.cpu()
     th_gt = torch.tensor(gt_imgs).permute(0, 3, 1, 2).cpu()
+
+    print("Predicted image shape (th_rgbs):", th_rgbs.shape)
+    print("Ground truth image shape (th_gt):", th_gt.shape)
+
+    th_rgbs = th_rgbs.float()
+    th_gt = th_gt.float()
+    
+    print("Any NaNs in th_rgbs:", torch.isnan(th_rgbs).any())
+    print("Any NaNs in th_gt:", torch.isnan(th_gt).any())
+    print("Any Infs in th_rgbs:", torch.isinf(th_rgbs).any())
+    print("Any Infs in th_gt:", torch.isinf(th_gt).any())
+
     try:
         th_ssim = ssim_eval(th_rgbs, th_gt)
     except:
@@ -522,94 +534,6 @@ class Criterion3DPose_leastQuaresScaled(torch.nn.Module):
         return self.criterion.forward(s_opt*pred, label), s_opt*pred
 
 
-class SMPLEvalHelper(SMPL):
-    # steal from SPIN
-    def __init__(self, *args, **kwargs):
-        super(SMPLEvalHelper, self).__init__(*args, **kwargs)
-        J_regressor_extra = np.load("smpl/data/J_regressor_h36m.npy")
-        self.register_buffer('J_regressor_extra', torch.tensor(J_regressor_extra, dtype=torch.float32))
-
-    def forward(self, *args, **kwargs):
-        smpl_output = super(SMPLEvalHelper, self).forward(*args, **kwargs)
-        h36m_joints = vertices2joints(self.J_regressor_extra, smpl_output.vertices)
-        return smpl_output, h36m_joints
-
-
-SPIN_TO_CANON = [10, 8, 14, 15, 16, 11, 12, 13, 4, 5, 6, 1, 2, 3, 0, 7, 9]
-H36M_TO_17 = [6, 5, 4, 1, 2, 3, 16, 15, 14, 11, 12, 13, 8, 10, 0, 7, 9]
-H36M_TO_14 = H36M_TO_17[:14]
-@torch.no_grad()
-def evaluate_pampjpe_from_smpl_params(gt_kps, betas, bones, bone_orders="xyz",
-                                      ret_kp=False, ret_pck=False,
-                                      align_kp=False, pck_threshold=150,
-                                      reduction="mean",
-                                      use_normalize=False):
-
-    assert betas.dim() == 2
-    if betas.shape[0] == 1:
-        betas = betas.expand(len(gt_kps), -1)
-
-    rots = axisang_to_rot(bones.view(-1, 3)).view(*bones.shape[:2], 3, 3)
-
-
-    smpl = SMPLEvalHelper("smpl/SMPL_NEUTRAL.pkl").to(rots.device)
-    _, pred_kps = smpl(betas=betas,
-                       body_pose=rots[:, 1:],
-                       global_orient=rots[:, :1],
-                       pose2rot=False)
-    pred_kps = pred_kps[:, SPIN_TO_CANON] # to the same scale
-    # H36M TO 14
-    #pred_kps = pred_kps[:, H36M_TO_14] # to the same scale
-    #print("TO 14")
-    #gt_kps = gt_kps[:, :14]
-
-    mpjpe_crit = Criterion_MPJPE(reduction=reduction).to(rots.device)
-    pampjpe_crit = Criterion3DPose_ProcrustesCorrected(mpjpe_crit).to(rots.device)
-
-    if use_normalize:
-        mpjpe_crit = Criterion3DPose_leastQuaresScaled(mpjpe_crit)
-
-    pampjpe, aligned_kps = pampjpe_crit(pred_kps,
-                           torch.FloatTensor(gt_kps).to(pred_kps.device))
-
-    gt_kps_trans = gt_kps.copy()
-    pred_kps_trans = pred_kps.clone()
-    gt_kps_trans = gt_kps_trans - gt_kps_trans[:, 14:15]
-    pred_kps_trans = pred_kps_trans - pred_kps_trans[:, 14:15]
-    #gt_kps_trans = gt_kps_trans - gt_kps_trans[:, :1]
-    #pred_kps_trans = pred_kps_trans - pred_kps_trans[:, :1]
-    mpjpe = mpjpe_crit(pred_kps_trans,
-                       torch.FloatTensor(gt_kps_trans / 1000).to(pred_kps.device))
-    if use_normalize:
-        mpjpe = mpjpe[0]
-
-    mpjpe  = mpjpe * 1000
-
-    if not ret_kp:
-        return pampjpe, mpjpe
-    if align_kp:
-        return pampjpe, mpjpe, aligned_kps
-    if ret_pck:
-        # in /1000 scale to avoid numerical issue
-        pck_threshold = pck_threshold
-        pck = (pampjpe < pck_threshold).float().mean()
-
-        thresholds = torch.linspace(0, 150, 31).tolist()
-        auc = []
-        for i, t in enumerate(thresholds):
-            pck_at_t = (pampjpe < t).float().mean().item()
-            auc.append(pck_at_t)
-
-        return pampjpe, mpjpe, pck, np.mean(auc)
-
-
-    def pck(actual, expected, included_joints=None, threshold=150):
-        dists = euclidean_losses(actual, expected)
-        if included_joints is not None:
-            dists = dists.gather(-1, torch.LongTensor(included_joints))
-        return (dists < threshold).double().mean().item()
-
-    return pampjpe, mpjpe, pred_kps
 
 def estimates_to_kp2ds(kps, exts, img_height, img_width, focals,
                        pose_scale=1.0, pelvis_locs=None,
@@ -636,4 +560,3 @@ def estimates_to_kp2ds(kps, exts, img_height, img_width, focals,
             )
 
     return kp2ds
-

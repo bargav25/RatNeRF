@@ -12,74 +12,78 @@ from .encoders import *
 from .cutoff_embedder import get_embedder
 from .utils.ray_utils import *
 from .utils.run_nerf_helpers import *
-from .utils.skeleton_utils import SMPLSkeleton, rot6d_to_axisang, axisang_to_rot, bones_to_rot
+
+torch.set_default_dtype(torch.float)
+
 
 def create_raycaster(args, data_attrs, device=None):
     """Instantiate NeRF's MLP model.
     """
-    skel_type = data_attrs["skel_type"]
+    # skel_type = data_attrs["skel_type"]
+
+    skel_type = None
+
     near, far = data_attrs["near"], data_attrs["far"]
     n_framecodes = data_attrs["n_views"] if args.n_framecodes is None else args.n_framecodes
 
-    pts_tr_fn = get_pts_tr_fn(args)
-    kp_input_fn, input_dims, cutoff_dims = get_kp_input_fn(args, skel_type)
-    bone_input_fn, bone_dims = get_bone_input_fn(args, skel_type)
-    view_input_fn, view_dims = get_view_input_fn(args, skel_type)
+    N_joints = data_attrs['kp3d'].shape[1]
+
+    print(f"Number of Joints: {N_joints}")
+
+    # pts_tr_fn = get_pts_tr_fn(args)
+    # kp_input_fn, input_dims, cutoff_dims = get_kp_input_fn(args, skel_type)
+    # bone_input_fn, bone_dims = get_bone_input_fn(args, skel_type)
+    # view_input_fn, view_dims = get_view_input_fn(args, skel_type, N_joints)
+
+    pts_tr_fn = WorldToLocalEncoder()
+    kp_input_fn = RelDistEncoder(N_joints)
+    bone_input_fn = VecNormEncoder(N_joints)
+    view_input_fn = VecNormEncoder(N_joints)
+
+    cutoff_dims = N_joints
+    
     print(f'KPE: {kp_input_fn.encoder_name}, BPE: {bone_input_fn.encoder_name}, VPE: {view_input_fn.encoder_name}')
 
-    cutoff_kwargs = {
-        "cutoff": args.use_cutoff,
-        "normalize_cutoff": args.normalize_cutoff,
-        "cutoff_dist": args.cutoff_mm * args.ext_scale,
-        "cutoff_inputs": args.cutoff_inputs,
-        "opt_cutoff": args.opt_cutoff,
-        "cutoff_dim": cutoff_dims,
-        "dist_inputs":  not(input_dims == cutoff_dims),
-        "freq_schedule": args.freq_schedule,
-        "init_alpha": args.init_freq,
-    }
+    input_dims = kp_input_fn.dims
+    view_dims = view_input_fn.dims
+    bone_dims = bone_input_fn.dims
 
-    # function to encode input (RGB/view to PE)
-    embedpts_fn, input_ch_pts = None, None # only for mnerf
-    dist_cutoff_kwargs = deepcopy(cutoff_kwargs)
-    dist_cutoff_kwargs['cut_to_cutoff'] = args.cut_to_dist
-    dist_cutoff_kwargs['shift_inputs'] = args.cutoff_shift
+    # cutoff_kwargs = {
+    #     "cutoff": args.use_cutoff,
+    #     "normalize_cutoff": args.normalize_cutoff,
+    #     "cutoff_dist": args.cutoff_mm * args.ext_scale,
+    #     "cutoff_inputs": args.cutoff_inputs,
+    #     "opt_cutoff": args.opt_cutoff,
+    #     "cutoff_dim": cutoff_dims,
+    #     "dist_inputs":  not(input_dims == cutoff_dims),
+    #     "freq_schedule": args.freq_schedule,
+    #     "init_alpha": args.init_freq,
+    # }
+
+    # dist_cutoff_kwargs = deepcopy(cutoff_kwargs)
+    # dist_cutoff_kwargs['cut_to_cutoff'] = args.cut_to_dist
+    # dist_cutoff_kwargs['shift_inputs'] = args.cutoff_shift
+
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed,
                                       input_dims=input_dims,
                                       skel_type=skel_type,
-                                      cutoff_kwargs=dist_cutoff_kwargs)
+                                      cutoff_kwargs = {"cutoff": False})
 
-    input_ch_bones = bone_dims
-    embedbones_fn = None
-    if bone_dims > 0:
-        if args.cutoff_bones:
-            bone_cutoff_kwargs = deepcopy(cutoff_kwargs)
-            bone_cutoff_kwargs["dist_inputs"] = True
-        else:
-            bone_cutoff_kwargs = {"cutoff": False}
+    embedbones_fn, input_ch_bones = get_embedder(args.multires, args.i_embed,
+                                      input_dims=bone_dims,
+                                      skel_type=skel_type,
+                                      cutoff_kwargs={"cutoff": False})
 
-        embedbones_fn, input_ch_bones = get_embedder(args.multires_bones, args.i_embed,
-                                                    input_dims=bone_dims,
-                                                    skel_type=skel_type,
-                                                    cutoff_kwargs=bone_cutoff_kwargs)
+    embeddirs_fn, input_ch_views = get_embedder(args.multires, args.i_embed,
+                                      input_dims=view_dims,
+                                      skel_type=skel_type,
+                                      cutoff_kwargs={"cutoff": False})
 
-    input_ch_views = 0
-    embeddirs_fn = None
-    # no cutoff for view dir
-    if args.use_viewdirs:
-        if args.cutoff_viewdir:
-            view_cutoff_kwargs = deepcopy(cutoff_kwargs)
-            view_cutoff_kwargs["dist_inputs"] = True
-        else:
-            view_cutoff_kwargs = {"cutoff": False}
-        view_cutoff_kwargs["cutoff_dim"] = len(skel_type.joint_trees)
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed,
-                                                    input_dims=view_dims ,
-                                                    skel_type=skel_type,
-                                                    cutoff_kwargs=view_cutoff_kwargs)
 
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
+
+    print(f"###### {input_ch}, {input_ch_bones} and {input_ch_views} ###")
 
     nerf_kwargs = {'D': args.netdepth, 'W': args.netwidth,
                    'input_ch': input_ch,
@@ -104,10 +108,16 @@ def create_raycaster(args, data_attrs, device=None):
             model_fine = model
 
     # create ray caster
+    # ray_caster = RayCaster(model, embed_fn, embedbones_fn, embeddirs_fn, network_fine=model_fine,
+    #                        joint_coords=torch.tensor(data_attrs['joint_coords']),
+    #                        single_net=args.single_net)
+
     ray_caster = RayCaster(model, embed_fn, embedbones_fn, embeddirs_fn, network_fine=model_fine,
-                           joint_coords=torch.tensor(data_attrs['joint_coords']),
+                           joint_coords=None,
                            single_net=args.single_net)
+
     print(ray_caster)
+
     ray_caster.state_dict()
     # add all learnable grad vars
     grad_vars = get_grad_vars(args, ray_caster)
@@ -248,11 +258,11 @@ def get_pts_tr_fn(args):
     return tr_fn
 
 
-def get_kp_input_fn(args, skel_type):
+def get_kp_input_fn(args, skel_type, N_joints):
 
     kp_input_fn = None
-    cutoff_dims = len(skel_type.joint_names)
-    N_joints = len(skel_type.joint_names)
+    cutoff_dims = N_joints
+    # N_joints = len(skel_type.joint_names)
 
     if args.kp_dist_type == 'reldist':
         kp_input_fn = RelDistEncoder(N_joints)
@@ -412,29 +422,51 @@ class RayCaster(nn.Module):
         # Note: last dimension for ray direction needs to be normalized
         N_rays = ray_batch.shape[0]
         rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
+
+        # print("rays_o: ", rays_o)
+        # print("rays_d: ", rays_d)
         viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
         bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
         near, far = bounds[...,0], bounds[...,1] # [-1,1]
 
         # Step 2: Sample 'coarse' sample from the ray segment within the bounding cylinder
-        near, far =  get_near_far_in_cylinder(rays_o, rays_d, cyls, near=near, far=far)
+        # near, far =  get_near_far_in_cylinder(rays_o, rays_d, cyls, near=near, far=far)
         pts, z_vals = self.sample_pts(rays_o, rays_d, near, far, N_rays, N_samples,
                                       perturb, lindisp, pytest=pytest, ray_noise_std=ray_noise_std)
+        # print(f" ########## {pts.size()}, {rays_o.size()}, {rays_d.size()}, {N_rays}, {N_samples}, {kp_batch.size()}######")
+        # # prepare local coordinate system
+        # joint_coords = self.get_subject_joint_coords(subject_idxs, pts.device)
 
-        # prepare local coordinate system
-        joint_coords = self.get_subject_joint_coords(subject_idxs, pts.device)
+        joint_coords = None
+
+
 
         # Step 3: encode
         encoded = self.encode_inputs(pts, [rays_o[:, None, :], rays_d[:, None, :]], kp_batch,
                                      skts, bones, cam_idxs=cams, subject_idxs=subject_idxs,
                                      joint_coords=joint_coords, network=self.network,
                                      **preproc_kwargs)
+                                     
+        # print("Input Encoded: ", encoded)
+                  
+
 
         # Step 4: forwarding in NeRF and get coarse outputs
         raw = self.run_network(encoded, self.network)
+
+        # print("NERF Output Shape: ", raw.size())
+
+        # print("NERF Raw Output: ", raw)
+
         ret_dict = self.network.raw2outputs(raw, z_vals, rays_d, raw_noise_std, pytest=pytest,
                                             encoded=encoded, B=preproc_kwargs['density_scale'],
                                             act_fn=preproc_kwargs['density_fn'])
+
+        
+
+
+        # print("RGB in ret_dict shape:", ret_dict['rgb_map'].size())
+        # print("RGB in ret_dict:", ret_dict['rgb_map'])
 
         # Step 6: generate fine outputs
         ret_dict0 = None
@@ -467,9 +499,12 @@ class RayCaster(nn.Module):
                                                    N_rays, N_total_samples)
                 raw  = self._merge_encodings({'raw': raw}, {'raw': raw_is}, sorted_idxs,
                                              N_rays, N_total_samples)['raw']
+
             ret_dict = self.network_fine.raw2outputs(raw, z_vals, rays_d, raw_noise_std, pytest=pytest,
                                                      encoded=encoded_is, B=preproc_kwargs['density_scale'],
                                                      act_fn=preproc_kwargs['density_fn'])
+
+        # print("RGBs in ret_dict: ", ret_dict['rgb_map'])
 
         return self._collect_outputs(ret_dict, ret_dict0)
 
@@ -499,30 +534,61 @@ class RayCaster(nn.Module):
           encoded: v (distance), r (rotation), and d(ray direction)
         """
 
-
+        # print(f"Keypoints shape:", kps.shape)
         if pts.shape[0] > kps.shape[0]:
-            # expand kps to match the number of rays
-            assert kps.shape[0] == 1
-            kps = kps.expand(pts.shape[0], *kp_batch.shape[1:])
+          # expand kps to match the number of rays
+          assert kps.shape[0] == 1
+          kps = kps.expand(pts.shape[0], *kp_batch.shape[1:])
+
+        # skts = None #### ADDED ###
+
+        # if pts.shape[0] > kps.shape[0]:
+        #     # print(f"Keypoints shape: {kps.shape}, Points shape: {pts.shape}")
+        #     # Get the shapes of points and keypoints
+        #     N_imgs_rays, N_pts, _ = pts.shape  # pts has shape (N_imgs * N_rays, N_pts, 3)
+        #     N_imgs_joints, _ = kps.shape       # kps has shape (N_imgs * N_joints, 3)
+
+        #     # Calculate number of images and rays per image
+        #     N_joints = 20                      # Known number of joints
+        #     N_imgs = N_imgs_joints // N_joints  # Derive number of images from kps shape
+        #     N_rays = N_imgs_rays // N_imgs      # Calculate number of rays per image
+
+        #     kps = kps.view(N_imgs, N_joints, 3)
+
+        #     # Expand keypoints to match the points (rays)
+        #     kps = kps.unsqueeze(1).expand(N_imgs, N_rays, N_joints, 3)
+        #     kps = kps.reshape(N_imgs * N_rays, N_joints, 3)
+        #     # Verify shapes match
+        #     assert kps.shape[0] == pts.shape[0], "First dimensions of kps and pts should match"
 
         # tranform points/rays to local coordinate (if needed)
+
+
         if skts is not None:
             pts_t = pts_tr_fn(pts, skts, bones=bones, coords=joint_coords, kps=kps)
             rays_t = transform_batch_rays(rays[0], rays[1], skts)
+
+            # print("pts_t shape: ", pts_t.shape)
+            # print("skts shape: ", skts.shape)
         else:
             pts_t = pts
+            # pts_t = None
             rays_t = rays[1] # only needs ray direction
 
         # Step 1: keypoint encoding
         v = kp_input_fn(pts, pts_t, kps)
 
+
         # Step 2: bone encoding
-        # TODO: could be None
         r = bone_input_fn(pts_t, bones=bones, coords=joint_coords)
 
         # Step 3: view encoding
         d = view_input_fn(rays_t, bones=bones, refs=pts_t, pts_t=pts_t,
                           coords=joint_coords)
+
+        # print("V Size before embed: ",v.size())
+        # print("R Size before embed: ",r.size())
+        # print("D Size before embed: ",d.size())
 
         # Positional encoding here?
         # check kp_input_fn type
@@ -532,10 +598,16 @@ class RayCaster(nn.Module):
         else:
             j_dists = torch.norm(pts[:, :, None] - kps[:, None], dim=-1, p=2)
 
+        # print(f"Sizes before Embedding: {v.size(), {r.size()} and.size()}")
+
         # cw: cutoff weights
         v, cw = self.embed_fn(v, dists=j_dists)
         r, _ = self.embedbones_fn(r, dists=j_dists)
         d, _ = self.embeddirs_fn(d, dists=j_dists)
+
+        # print("V Size after embed: ",v.size())
+        # print("R Size after embed: ",r.size())
+        # print("D Size after embed: ",d.size())
 
         if cam_idxs is not None:
             # append cam_idxs after view
@@ -548,26 +620,38 @@ class RayCaster(nn.Module):
             d = torch.cat([d, subject_idxs], dim=-1)
 
         encoded = {
-            'v': v,
+            'v': v / 1000.,
             'r': r,
             'd': d,
         }
+
+        # print(f"Sizes of encodings: {v.size()}, {d.size()}")
+        
         return encoded
 
     def run_network(self, encoded, network, netchunk=1024*64):
 
-
         cat_lists = [encoded['v']]
 
-        # has bone encoding
+        # print("size of encoded v: ", encoded['v'].shape)
+
         if encoded['r'] is not None:
+
+            # print("size of encoded r: ", encoded['r'].shape)
+
             cat_lists.append(encoded['r'])
-        # has view encoding
+
         if encoded['d'] is not None:
+
+            # print("size of encoded d: ", encoded['d'].shape)
+
             cat_lists.append(encoded['d'])
 
+
         encoded = torch.cat(cat_lists, dim=-1)
+        # encoded = encoded['v']
         shape = encoded.shape
+        encoded = encoded.float()
 
         # flatten and forward
         outputs_flat = network.forward_batchify(encoded.reshape(-1, shape[-1]), chunk=netchunk)
@@ -628,7 +712,7 @@ class RayCaster(nn.Module):
             pts_t = transform_batch_pts(pts, skts)
             if v is None:
                 v = kp_input_fn(pts, pts_t, kps)
-            r = bone_input_fn(pts_t, bones=bones, coords=joint_coords)
+            # r = bone_input_fn(pts_t, bones=bones, coords=joint_coords)
 
             if 'Dist' in kp_input_fn.encoder_name:
                 j_dists = v
@@ -637,8 +721,9 @@ class RayCaster(nn.Module):
 
             # embedding!
             v, _ = self.embed_fn(v, dists=j_dists)
-            r, _ = self.embedbones_fn(r, dists=j_dists)
-            embedded = torch.cat([v, r], dim=-1)
+            # r, _ = self.embedbones_fn(r, dists=j_dists)
+            # embedded = torch.cat([v, r], dim=-1)
+            embedded = v
 
             h = network.forward_density(embedded)
             raw_density = network.alpha_linear(h)
@@ -720,6 +805,8 @@ class RayCaster(nn.Module):
             collected['disp0'] = ret0['disp_map']
             collected['acc0'] = ret0['acc_map']
             collected['alpha0'] = ret0['alpha']
+
+        # print("RGB in collected: ", collected['rgb_map'])
 
         return collected
 
@@ -819,4 +906,3 @@ def batchify(fn, chunk):
         return torch.cat([fn(inputs[i:i+chunk], **{k: kwargs[k][i:i+chunk] for k in kwargs})
                           for i in range(0, inputs.shape[0], chunk)], 0)
     return ret
-

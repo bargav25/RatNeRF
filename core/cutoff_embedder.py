@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from .utils.skeleton_utils import SMPLSkeleton
 
 # Positional encoding
 class Embedder(nn.Module):
@@ -198,7 +197,7 @@ class CutoffEmbedder(Embedder):
 
 def get_embedder(multires, i=0, input_dims=3,
                  cutoff_kwargs={"cutoff": False},
-                 skel_type=SMPLSkeleton,
+                 skel_type=None,
                  kc=False):
     if i == -1:
         return nn.Identity(), input_dims
