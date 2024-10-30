@@ -49,8 +49,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs,
 
     if kp is not None or cyls is not None:
         # only render part of the image
-        rays, valid_idxs, cyls, bboxes = kp_to_valid_rays(render_poses, H, W,
-                                                          focal, kps=kp, cylinder_params=cyls,
+        rays, valid_idxs, bbox_params, bboxes = kp_to_valid_rays(render_poses, H, W,
+                                                          focal, kps=kp, bbox_params=cyls,
                                                           skts=skts, ext_scale=ext_scale,
                                                           centers=centers)
     else:

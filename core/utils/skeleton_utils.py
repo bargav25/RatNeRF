@@ -1,4 +1,7 @@
 import numpy as np
+import plotly.graph_objects as go
+import h5py
+
 
 rat7m_joints = ['HeadF', 'HeadB', 'HeadL', 'SpineF', 'SpineM', 'SpineL', 'Offset1', 'Offset2', 
                 'HipL', 'HipR', 'ElbowL', 'ArmL', 'ShoulderL', 'ShoulderR', 'ElbowR', 'ArmR', 
@@ -183,67 +186,67 @@ def get_rat_skeleton_transformation(kps, parent_child_relationships, root_joint=
 
     return skts, np.array(l2ws)
 
-def get_kp_bounding_cylinder(kp, skel_type=None, ext_scale=0.0001,
-                             extend_mm=50, top_expand_ratio=0.5,
-                             bot_expand_ratio=0.2, head=None):
-    '''
-    Defines a bounding cylinder for a rat model, encompassing all keypoints.
-    - kp: Keypoints as a NumPy array, expected shape [num_keypoints, 3] or [batch_size, num_keypoints, 3].
-    - skel_type: Type of skeleton, if applicable; if not, determined from `kp`.
-    - ext_scale: Scale factor for cylinder radius extension.
-    - extend_mm: Millimeter extension to base radius.
-    - top_expand_ratio, bot_expand_ratio: Ratios for extending the top and bottom bounds of the cylinder.
-    - head: Specifies the ground plane direction (e.g., '-y' for SPIN, 'z' for SURREAL datasets).
-    '''
-    # Ensure head direction is specified
-    assert head is not None, "Specify the direction of the ground plane for the rat's body orientation."
-    print(f'Head direction: {head}')
+# def get_kp_bounding_cylinder(kp, skel_type=None, ext_scale=0.0001,
+#                              extend_mm=50, top_expand_ratio=0.5,
+#                              bot_expand_ratio=0.2, head=None):
+#     '''
+#     Defines a bounding cylinder for a rat model, encompassing all keypoints.
+#     - kp: Keypoints as a NumPy array, expected shape [num_keypoints, 3] or [batch_size, num_keypoints, 3].
+#     - skel_type: Type of skeleton, if applicable; if not, determined from `kp`.
+#     - ext_scale: Scale factor for cylinder radius extension.
+#     - extend_mm: Millimeter extension to base radius.
+#     - top_expand_ratio, bot_expand_ratio: Ratios for extending the top and bottom bounds of the cylinder.
+#     - head: Specifies the ground plane direction (e.g., '-y' for SPIN, 'z' for SURREAL datasets).
+#     '''
+#     # Ensure head direction is specified
+#     assert head is not None, "Specify the direction of the ground plane for the rat's body orientation."
+#     print(f'Head direction: {head}')
 
-    # Define ground and vertical axes based on head orientation
-    if head.endswith('z'):
-        g_axes = [0, 1]
-        h_axis = 2
-    elif head.endswith('y'):
-        g_axes = [0, 2]
-        h_axis = 1
-    else:
-        raise NotImplementedError(f'Head orientation "{head}" is not implemented for rats!')
+#     # Define ground and vertical axes based on head orientation
+#     if head.endswith('z'):
+#         g_axes = [0, 1]
+#         h_axis = 2
+#     elif head.endswith('y'):
+#         g_axes = [0, 2]
+#         h_axis = 1
+#     else:
+#         raise NotImplementedError(f'Head orientation "{head}" is not implemented for rats!')
 
-    # Flip height if the head is in the negative direction
-    flip = 1 if not head.startswith('-') else -1
+#     # Flip height if the head is in the negative direction
+#     flip = 1 if not head.startswith('-') else -1
 
-    n_dim = len(kp.shape)
-    # Root location is usually the pelvis or torso region
-    root_loc = kp[..., 3, :]  # assuming skel_type.root_id = 3
+#     n_dim = len(kp.shape)
+#     # Root location is usually the pelvis or torso region
+#     root_loc = kp[..., 3, :]  # assuming skel_type.root_id = 3
 
-    # Calculate distance to center line (horizontal distance from root)
-    if n_dim == 2:
-        dist = np.linalg.norm(kp[:, g_axes] - root_loc[g_axes], axis=-1)
-        max_height = (flip * kp[:, h_axis]).max()
-        min_height = (flip * kp[:, h_axis]).min()
-        max_dist = dist.max()
-    elif n_dim == 3:  # for batches
-        dist = np.linalg.norm(kp[..., g_axes] - root_loc[:, None, g_axes], axis=-1)
-        max_height = (flip * kp[..., h_axis]).max(axis=1)
-        min_height = (flip * kp[..., h_axis]).min(axis=1)
-        max_dist = dist.max(axis=1)
+#     # Calculate distance to center line (horizontal distance from root)
+#     if n_dim == 2:
+#         dist = np.linalg.norm(kp[:, g_axes] - root_loc[g_axes], axis=-1)
+#         max_height = (flip * kp[:, h_axis]).max()
+#         min_height = (flip * kp[:, h_axis]).min()
+#         max_dist = dist.max()
+#     elif n_dim == 3:  # for batches
+#         dist = np.linalg.norm(kp[..., g_axes] - root_loc[:, None, g_axes], axis=-1)
+#         max_height = (flip * kp[..., h_axis]).max(axis=1)
+#         min_height = (flip * kp[..., h_axis]).min(axis=1)
+#         max_dist = dist.max(axis=1)
 
-    # Set cylinder radius and height bounds with additional adjustments for rat proportions
-    extension = extend_mm * ext_scale
-    radius = max_dist + extension
-    top = flip * (max_height + extension * top_expand_ratio)  # extend head region a bit
-    bot = flip * (min_height - extension * bot_expand_ratio)  # limit tail extension
+#     # Set cylinder radius and height bounds with additional adjustments for rat proportions
+#     extension = extend_mm * ext_scale
+#     radius = max_dist + extension
+#     top = flip * (max_height + extension * top_expand_ratio)  # extend head region a bit
+#     bot = flip * (min_height - extension * bot_expand_ratio)  # limit tail extension
 
-    # Expand dimensions to make sure shapes are consistent for stacking
-    root_loc = root_loc[..., g_axes]  # [batch, 2] or [2]
-    radius = np.expand_dims(radius, -1)
-    top = np.expand_dims(top, -1)
-    bot = np.expand_dims(bot, -1)
+#     # Expand dimensions to make sure shapes are consistent for stacking
+#     root_loc = root_loc[..., g_axes]  # [batch, 2] or [2]
+#     radius = np.expand_dims(radius, -1)
+#     top = np.expand_dims(top, -1)
+#     bot = np.expand_dims(bot, -1)
 
-    # Stack cylinder parameters: center coordinates, radius, top, and bottom
-    cylinder_params = np.concatenate([root_loc, radius, top, bot], axis=-1)
+#     # Stack cylinder parameters: center coordinates, radius, top, and bottom
+#     cylinder_params = np.concatenate([root_loc, radius, top, bot], axis=-1)
 
-    return cylinder_params
+#     return cylinder_params
 
 def focal_to_intrinsic_np(focal):
     if isinstance(focal, float) or (len(focal.reshape(-1)) < 2):
@@ -400,16 +403,331 @@ def calculate_angle(a, b=None):
 
     return angle - 0.5 * np.pi
 
+def box_to_2d(bbox_params, hwf, w2c=None, scale=1.0, center=None, make_int=True):
+    """
+    Projects a 3D bounding box onto a 2D image plane.
+
+    Args:
+      bbox_params: Array with shape (6,) containing the min and max values along x, y, and z axes
+                   as [x_min, x_max, y_min, y_max, z_min, z_max].
+      hwf: Tuple (H, W, focal) for the image height, width, and focal length.
+      w2c: Optional world-to-camera matrix (4x4).
+      scale: Scaling factor for the box.
+      center: Optional image center offset.
+      make_int: If True, rounds the bounding box to integer values.
+
+    Returns:
+      tl: Top-left corner coordinates of the 2D bounding box.
+      br: Bottom-right corner coordinates of the 2D bounding box.
+      pts_2d: Array of 2D projected points for each corner of the box.
+    """
+    H, W, focal = hwf
+    x_min, x_max, y_min, y_max, z_min, z_max = bbox_params
+
+    # Define the 8 vertices of the bounding box in world space
+    box_vertices = np.array([
+        [x_min, y_min, z_min], [x_max, y_min, z_min],
+        [x_max, y_max, z_min], [x_min, y_max, z_min],
+        [x_min, y_min, z_max], [x_max, y_min, z_max],
+        [x_max, y_max, z_max], [x_min, y_max, z_max]
+    ])
+    
+    # Convert the box vertices to homogeneous coordinates
+    box_vertices = np.hstack([box_vertices, np.ones((8, 1))])
+
+    # Apply the world-to-camera transformation if provided
+    if w2c is not None:
+        box_vertices = box_vertices @ w2c.T
+
+    # Project 3D points to 2D image plane using the intrinsic matrix
+    intrinsic = focal_to_intrinsic_np(focal)
+    img_pts = box_vertices @ intrinsic.T
+    img_pts = img_pts[:, :2] / img_pts[:, 2:3]  # Normalize by depth to get 2D points
+
+    # Determine the bounding box in image space
+    max_x, min_x = img_pts[:, 0].max(), img_pts[:, 0].min()
+    max_y, min_y = img_pts[:, 1].max(), img_pts[:, 1].min()
+
+    # Apply scaling to the bounding box
+    if scale != 1.0:
+        width, height = (max_x - min_x) * 0.5 * scale, (max_y - min_y) * 0.5 * scale
+        center_x, center_y = (max_x + min_x) / 2, (max_y + min_y) / 2
+        min_x, max_x = center_x - width, center_x + width
+        min_y, max_y = center_y - height, center_y + height
+
+    # Round to integers if requested
+    if make_int:
+        min_x, max_x = np.floor(min_x).astype(np.int32), np.ceil(max_x).astype(np.int32)
+        min_y, max_y = np.floor(min_y).astype(np.int32), np.ceil(max_y).astype(np.int32)
+
+    # Apply image center offset
+    offset_x, offset_y = (W // 2, H // 2) if center is None else center
+    tl = np.array([min_x + offset_x, min_y + offset_y], dtype=np.int32)
+    br = np.array([max_x + offset_x, max_y + offset_y], dtype=np.int32)
+
+    # Clip bounding box to be within image bounds
+    tl[0], br[0] = np.clip([tl[0], br[0]], 0, W - 1)
+    tl[1], br[1] = np.clip([tl[1], br[1]], 0, H - 1)
+
+    return tl, br, img_pts
+
+# # Function to visualize the skeleton and cylinders
+# def plot_skeleton_3d(kps, parent_child_relationships, cylinder_params_batch):
+#     x, y, z = kps[:, 0], kps[:, 1], kps[:, 2]
+#     joint_scatter = go.Scatter3d(x=x, y=y, z=z, mode='markers', marker=dict(size=5, color='blue'))
+
+#     edges = []
+#     for child, parent in parent_child_relationships.items():
+#         edges.append(go.Scatter3d(
+#             x=[x[parent], x[child]],
+#             y=[y[parent], y[child]],
+#             z=[z[parent], z[child]],
+#             mode='lines',
+#             line=dict(color='black', width=2)
+#         ))
+
+#     cylinder_lines = []
+#     theta = np.linspace(0, 2 * np.pi, 50)
+#     for params in cylinder_params_batch:
+#         x_center, y_center, radius, top, bot = params
+
+#         # Create the top and bottom circles of the cylinder
+#         x_circle = x_center + radius * np.cos(theta)
+#         y_circle = y_center + radius * np.sin(theta)
+
+#         # Add top and bottom cylinder caps
+#         cylinder_lines.append(go.Scatter3d(
+#             x=x_circle, y=y_circle, z=np.full_like(x_circle, top),
+#             mode='lines', line=dict(color='red', width=2)
+#         ))
+#         cylinder_lines.append(go.Scatter3d(
+#             x=x_circle, y=y_circle, z=np.full_like(x_circle, bot),
+#             mode='lines', line=dict(color='blue', width=2)
+#         ))
+
+#     fig = go.Figure(data=[joint_scatter] + edges + cylinder_lines)
+#     fig.update_layout(scene=dict(
+#         xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z')
+#     ))
+#     fig.show()
+
+import numpy as np
+import plotly.graph_objects as go
+
+def get_kp_bounding_cylinder(kp, head='-y', extend_mm=100, ext_scale=0.001, top_expand_ratio=0.8, bot_expand_ratio=0.3):
+    """
+    Calculates bounding cylinder parameters for keypoints in a single frame.
+
+    Args:
+      kp: Array of keypoints with shape (num_joints, 3).
+      head: String specifying the direction for grounding (e.g., '-y').
+      extend_mm: Millimeter extension to the radius.
+      ext_scale: Scaling factor for extension.
+      top_expand_ratio: Ratio to extend the top of the cylinder.
+      bot_expand_ratio: Ratio to extend the bottom of the cylinder.
+
+    Returns:
+      Array with [x_center, y_center, radius, top, bot] for the cylinder.
+    """
+    assert head is not None, "Specify the direction of the ground plane for the rat's body orientation."
+
+    # Determine ground axes and height axis based on head orientation
+    if head.endswith('z'):
+        g_axes = [0, 1]  # Ground plane is the x-y plane
+        h_axis = 2       # Height along the z-axis
+    elif head.endswith('y'):
+        g_axes = [0, 2]  # Ground plane is the x-z plane
+        h_axis = 1       # Height along the y-axis
+    else:
+        raise NotImplementedError(f'Head orientation "{head}" is not implemented!')
+
+    # Flip height if the head is in the negative direction
+    flip = 1 if not head.startswith('-') else -1
+    root_loc = kp[3]  # Assuming joint index 3 as the root for SpineF
+
+    # Calculate maximum distance from root to other keypoints in the ground plane
+    dist = np.linalg.norm(kp[:, g_axes] - root_loc[g_axes], axis=-1)
+    max_height = (flip * kp[:, h_axis]).max()
+    min_height = (flip * kp[:, h_axis]).min()
+    max_dist = dist.max()
+
+    # Compute radius and top/bottom extensions
+    extension = extend_mm * ext_scale
+    radius = max_dist + extension
+    top = flip * (max_height + extension * top_expand_ratio)
+    bot = flip * (min_height - extension * bot_expand_ratio)
+
+    # Extract scalars to avoid inhomogeneous array issues
+    x_center = float(root_loc[g_axes[0]])
+    y_center = float(root_loc[g_axes[1]])
+    radius = float(radius)
+    top = float(top)
+    bot = float(bot)
+
+    print(f"Cylinder params - x_center: {x_center}, y_center: {y_center}, radius: {radius}, top: {top}, bot: {bot}")
+
+    return np.array([x_center, y_center, radius, top, bot])
+
+# Function to visualize the skeleton and cylinders for each frame
+def plot_skeleton_3d(kps, parent_child_relationships, head_orientation='-y'):
+    num_frames = kps.shape[0]
+    cylinder_params_batch = [get_kp_bounding_cylinder(frame_kps, head=head_orientation) for frame_kps in kps]
+    theta = np.linspace(0, 2 * np.pi, 50)
+
+    data = []  # Collect all frame data here for Plotly
+    for frame_idx in range(num_frames):
+        frame_kps = kps[frame_idx]
+        x, y, z = frame_kps[:, 0], frame_kps[:, 1], frame_kps[:, 2]
+        joint_scatter = go.Scatter3d(x=x, y=y, z=z, mode='markers', marker=dict(size=5, color='blue'))
+
+        # Add edges for the skeleton
+        edges = []
+        for child, parent in parent_child_relationships.items():
+            edges.append(go.Scatter3d(
+                x=[x[parent], x[child]],
+                y=[y[parent], y[child]],
+                z=[z[parent], z[child]],
+                mode='lines',
+                line=dict(color='black', width=2)
+            ))
+
+        # Add the cylinder for this frame
+        cylinder_params = cylinder_params_batch[frame_idx]
+        x_center, y_center, radius, top, bot = cylinder_params
+
+        # Create the top and bottom circles of the cylinder based on head orientation
+        x_circle = x_center + radius * np.cos(theta)
+        y_circle = y_center + radius * np.sin(theta)
+        
+        # Ensure top and bottom are aligned with the appropriate axis
+        if head_orientation.endswith('y'):
+            z_top = np.full_like(x_circle, top)
+            z_bot = np.full_like(x_circle, bot)
+            cylinder_lines = [
+                go.Scatter3d(x=x_circle, y=y_circle, z=z_top, mode='lines', line=dict(color='red', width=2)),
+                go.Scatter3d(x=x_circle, y=y_circle, z=z_bot, mode='lines', line=dict(color='blue', width=2))
+            ]
+            # Connect the top and bottom circles with lines to form the cylinder
+            for i in range(len(x_circle)):
+                cylinder_lines.append(go.Scatter3d(
+                    x=[x_circle[i], x_circle[i]], y=[y_circle[i], y_circle[i]], z=[z_top[i], z_bot[i]],
+                    mode='lines', line=dict(color='gray', width=1)
+                ))
+        elif head_orientation.endswith('z'):
+            y_top = np.full_like(x_circle, top)
+            y_bot = np.full_like(x_circle, bot)
+            cylinder_lines = [
+                go.Scatter3d(x=x_circle, y=y_top, z=y_circle, mode='lines', line=dict(color='red', width=2)),
+                go.Scatter3d(x=x_circle, y=y_bot, z=y_circle, mode='lines', line=dict(color='blue', width=2))
+            ]
+            # Connect the top and bottom circles with lines to form the cylinder
+            for i in range(len(x_circle)):
+                cylinder_lines.append(go.Scatter3d(
+                    x=[x_circle[i], x_circle[i]], y=[y_top[i], y_bot[i]], z=[y_circle[i], y_circle[i]],
+                    mode='lines', line=dict(color='gray', width=1)
+                ))
+
+        # Add data for this frame to the batch
+        data.extend([joint_scatter] + edges + cylinder_lines)
+
+    fig = go.Figure(data=data)
+    fig.update_layout(scene=dict(
+        xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z')
+    ))
+    fig.show()
+
+
+
+
+def get_kp_bounding_box(kp, extension=5.0):
+    """
+    Calculates bounding box parameters for keypoints in a single frame with an optional extension.
+
+    Args:
+      kp: Array of keypoints with shape (num_joints, 3).
+      extension: Amount to extend each side of the bounding box.
+
+    Returns:
+      Bounding box parameters as six values: x_min, x_max, y_min, y_max, z_min, z_max.
+    """
+    # Find the min and max values along each axis
+    x_min, y_min, z_min = kp.min(axis=0) - extension
+    x_max, y_max, z_max = kp.max(axis=0) + extension
+
+    # Display bounding box parameters for debugging
+    print("\nBounding Box Debug Info:")
+    print(f"x_min: {x_min}, x_max: {x_max}")
+    print(f"y_min: {y_min}, y_max: {y_max}")
+    print(f"z_min: {z_min}, z_max: {z_max}")
+
+    return x_min, x_max, y_min, y_max, z_min, z_max
+
+
+def plot_skeleton_3d_with_bounding_box(kps, bounding_boxes, parent_child_relationships):
+    fig = go.Figure()
+
+    # Plot keypoints, bounding box, and skeleton for each frame
+    for frame_idx, frame_kps in enumerate(kps):
+        x, y, z = frame_kps[:, 0], frame_kps[:, 1], frame_kps[:, 2]
+        fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='markers', marker=dict(size=5, color='blue')))
+
+        # Extract bounding box parameters
+        x_min, x_max, y_min, y_max, z_min, z_max = bounding_boxes[frame_idx]
+
+        # Define the 8 vertices of the bounding box
+        box_vertices = np.array([
+            [x_min, y_min, z_min], [x_max, y_min, z_min],
+            [x_max, y_max, z_min], [x_min, y_max, z_min],
+            [x_min, y_min, z_max], [x_max, y_min, z_max],
+            [x_max, y_max, z_max], [x_min, y_max, z_max]
+        ])
+
+        # Plot lines between vertices to form the edges of the bounding box
+        edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],  # Bottom face
+            [4, 5], [5, 6], [6, 7], [7, 4],  # Top face
+            [0, 4], [1, 5], [2, 6], [3, 7]   # Vertical edges
+        ]
+        for edge in edges:
+            fig.add_trace(go.Scatter3d(
+                x=[box_vertices[edge[0], 0], box_vertices[edge[1], 0]],
+                y=[box_vertices[edge[0], 1], box_vertices[edge[1], 1]],
+                z=[box_vertices[edge[0], 2], box_vertices[edge[1], 2]],
+                mode='lines',
+                line=dict(color='red', width=2)
+            ))
+
+        # Plot skeleton lines using the parent-child relationships
+        for child, parent in parent_child_relationships.items():
+            fig.add_trace(go.Scatter3d(
+                x=[x[parent], x[child]],
+                y=[y[parent], y[child]],
+                z=[z[parent], z[child]],
+                mode='lines',
+                line=dict(color='black', width=2)
+            ))
+
+    fig.update_layout(scene=dict(xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z')))
+    fig.show()
+
 if __name__ == "__main__":
     # Example 3D keypoints for the rat skeleton (randomly generated for testing)
-    kps = np.random.rand(20, 3)
-    
+
+    with h5py.File("RatNeRF/A-NeRF-Rats/data/rats/rat7mdata.h5") as f:
+        kps = np.array(f["gt_kp3d"][:][:3])
+
+    print("Keypoints: ", kps)
+
     # Initialize the RatSkeleton and get parent-child relationships
     rat_skt = RatSkeleton()
     parent_child_relationships = rat_skt.get_parent_child_relationships()
 
+    bounding_boxes = [get_kp_bounding_box(frame_kps) for frame_kps in kps]
+
+    plot_skeleton_3d_with_bounding_box(kps, bounding_boxes, parent_child_relationships)
+
     # Compute the local-to-world transformations
-    skts, l2ws = get_rat_skeleton_transformation(kps, parent_child_relationships)
+    skts, l2ws = get_rat_skeleton_transformation(kps[0], parent_child_relationships)
 
     # Output the resulting transformation matrices
     print(l2ws.shape)

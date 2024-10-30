@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .skeleton_utils import get_kp_bounding_cylinder, cylinder_to_box_2d, nerf_c2w_to_extrinsic
+from .skeleton_utils import get_kp_bounding_cylinder, cylinder_to_box_2d, nerf_c2w_to_extrinsic, get_kp_bounding_box, box_to_2d
 
 # Ray helpers
 def get_rays(H, W, focal, c2w, center=None):
@@ -80,48 +80,60 @@ def ndc_rays(H, W, focal, near, rays_o, rays_d):
 
     return rays_o, rays_d
 
-def kp_to_valid_rays(poses, H, W, focal, kps=None, cylinder_params=None,
+def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
                      skts=None, centers=None, ext_scale=0.00035):
+    """
+    Computes valid rays within a bounding box for each pose.
 
-    if cylinder_params is None:
-        assert kps is not None
-        kps_np = kps.cpu().numpy()
-        bot_expand_ratio = 1.10
-        top_expand_ratio = 1.60
-        extend_mm = 250
+    Args:
+      poses: Camera poses as a list of 4x4 matrices.
+      H: Image height.
+      W: Image width.
+      focal: Focal length.
+      kps: Optional keypoints tensor (if bbox_params is not provided).
+      bbox_params: Bounding box parameters for each keypoint set in [x_min, x_max, y_min, y_max, z_min, z_max].
+      skts: Skeleton transformations (optional, unused here).
+      centers: Image center offsets (optional).
+      ext_scale: Scaling factor for bounding box extension.
 
-        cylinder_params = get_kp_bounding_cylinder(
-            kps_np, ext_scale=ext_scale, extend_mm=extend_mm,
-            top_expand_ratio=top_expand_ratio, bot_expand_ratio=bot_expand_ratio, head='-y'
-        )
-        cylinder_params = torch.FloatTensor(cylinder_params).to(kps.device)
+    Returns:
+      rays: List of valid ray origins and directions for each pose.
+      valid_idxs: List of valid indices within the bounding box.
+      bbox_params: Bounding box parameters.
+      bboxes: 2D top-left and bottom-right bounding box corners for each pose.
+    """
+    if bbox_params is None:
+        assert kps is not None, "Keypoints are required if bounding box parameters are not provided."
+        bbox_params = [get_kp_bounding_box(kp.cpu().numpy()) for kp in kps]  # Use bounding box function
+        bbox_params = torch.FloatTensor(bbox_params).to(kps.device)
 
     valid_idxs = []
     rays = []
     bboxes = []
 
     for i, c2w in enumerate(poses):
-        cyl_idx = i % kps.shape[0]
-        cyl_param = cylinder_params[cyl_idx]
+        bbox_idx = i % kps.shape[0]  # Cycle through keypoints
+        bbox_param = bbox_params[bbox_idx]
         f = focal if isinstance(focal, float) else focal[i]
         center = None if centers is None else centers[i]
         h = H if isinstance(H, int) else H[i]
         w = W if isinstance(W, int) else W[i]
 
-        ray_o, ray_d = get_rays(h, w, f, c2w, center=center)
+        ray_o, ray_d = get_rays(h, w, f, c2w, center=center)  # Generate rays
 
-        w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())
-        tl, br, _ = cylinder_to_box_2d(cyl_param.cpu().numpy(), [h, w, f], w2c, center=center)
+        w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())  # World-to-camera transform
+        tl, br, _ = box_to_2d(bbox_param.cpu().numpy(), [h, w, f], w2c, center=center)  # Project bounding box to 2D
 
-        # Clip bounding box to ensure it fits within the image dimensions
+        # Clip bounding box to image dimensions
         tl = np.clip(tl, 0, [w, h])
         br = np.clip(br, 0, [w, h])
 
-        # If the bounding box is invalid, fall back to the full image range
+        # Fall back to full image if bounding box is invalid
         if tl[1] >= br[1] or tl[0] >= br[0]:
-            print(f"Invalid bounding box for pose {i}. Falling back to full image.")
-            tl, br = [0, 0], [w, h]  # Use the entire image if bbox is invalid
+            print(f"Invalid bounding box for pose {i}. Using full image range.")
+            tl, br = [0, 0], [w, h]
 
+        # Create a grid of valid indices within the bounding box
         h_range = torch.arange(tl[1], br[1])
         w_range = torch.arange(tl[0], br[0])
         valid_h, valid_w = torch.meshgrid(h_range, w_range, indexing='ij')
@@ -135,7 +147,64 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, cylinder_params=None,
 
     print("Valid indices across all poses:", valid_idxs)
 
-    return rays, valid_idxs, cylinder_params, bboxes
+    return rays, valid_idxs, bbox_params, bboxes
+
+# def kp_to_valid_rays(poses, H, W, focal, kps=None, cylinder_params=None,
+#                      skts=None, centers=None, ext_scale=0.00035):
+
+#     if cylinder_params is None:
+#         assert kps is not None
+#         kps_np = kps.cpu().numpy()
+#         bot_expand_ratio = 1.10
+#         top_expand_ratio = 1.60
+#         extend_mm = 250
+
+#         cylinder_params = get_kp_bounding_cylinder(
+#             kps_np, ext_scale=ext_scale, extend_mm=extend_mm,
+#             top_expand_ratio=top_expand_ratio, bot_expand_ratio=bot_expand_ratio, head='-y'
+#         )
+#         cylinder_params = torch.FloatTensor(cylinder_params).to(kps.device)
+
+#     valid_idxs = []
+#     rays = []
+#     bboxes = []
+
+#     for i, c2w in enumerate(poses):
+#         cyl_idx = i % kps.shape[0]
+#         cyl_param = cylinder_params[cyl_idx]
+#         f = focal if isinstance(focal, float) else focal[i]
+#         center = None if centers is None else centers[i]
+#         h = H if isinstance(H, int) else H[i]
+#         w = W if isinstance(W, int) else W[i]
+
+#         ray_o, ray_d = get_rays(h, w, f, c2w, center=center)
+
+#         w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())
+#         tl, br, _ = cylinder_to_box_2d(cyl_param.cpu().numpy(), [h, w, f], w2c, center=center)
+
+#         # Clip bounding box to ensure it fits within the image dimensions
+#         tl = np.clip(tl, 0, [w, h])
+#         br = np.clip(br, 0, [w, h])
+
+#         # If the bounding box is invalid, fall back to the full image range
+#         if tl[1] >= br[1] or tl[0] >= br[0]:
+#             print(f"Invalid bounding box for pose {i}. Falling back to full image.")
+#             tl, br = [0, 0], [w, h]  # Use the entire image if bbox is invalid
+
+#         h_range = torch.arange(tl[1], br[1])
+#         w_range = torch.arange(tl[0], br[0])
+#         valid_h, valid_w = torch.meshgrid(h_range, w_range, indexing='ij')
+#         valid_idx = (valid_h * w + valid_w).view(-1)
+
+#         rays.append((ray_o.view(-1, 3)[valid_idx], ray_d.view(-1, 3)[valid_idx]))
+#         valid_idxs.append(valid_idx)
+#         bboxes.append((tl, br))
+
+#         print(f"Pose {i}: Valid indices count = {valid_idx.numel()}")
+
+#     print("Valid indices across all poses:", valid_idxs)
+
+#     return rays, valid_idxs, cylinder_params, bboxes
 
 def get_corner_rays(H, W, focal, poses):
     rays_o, rays_d = [], []
