@@ -47,6 +47,8 @@ def create_raycaster(args, data_attrs, device=None):
     input_dims = kp_input_fn.dims
     view_dims = view_input_fn.dims
     bone_dims = bone_input_fn.dims
+    
+
 
     # cutoff_kwargs = {
     #     "cutoff": args.use_cutoff,
@@ -620,7 +622,7 @@ class RayCaster(nn.Module):
             d = torch.cat([d, subject_idxs], dim=-1)
 
         encoded = {
-            'v': v / 1000.,
+            'v': v,
             'r': r,
             'd': d,
         }

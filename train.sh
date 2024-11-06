@@ -12,6 +12,7 @@
 # Specify the minimum GPU compute capability. 
 #$ -l gpu_c=8.0
 
+#$ -l h_rt=16:00:00
 
 module load miniconda
 

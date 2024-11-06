@@ -107,6 +107,8 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
         bbox_params = [get_kp_bounding_box(kp.cpu().numpy()) for kp in kps]  # Use bounding box function
         bbox_params = torch.FloatTensor(bbox_params).to(kps.device)
 
+    # print("BBOX Params", bbox_params)
+
     valid_idxs = []
     rays = []
     bboxes = []
@@ -119,6 +121,8 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
         h = H if isinstance(H, int) else H[i]
         w = W if isinstance(W, int) else W[i]
 
+        # print("center: ", center)
+
         ray_o, ray_d = get_rays(h, w, f, c2w, center=center)  # Generate rays
 
         w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())  # World-to-camera transform
@@ -127,6 +131,8 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
         # Clip bounding box to image dimensions
         tl = np.clip(tl, 0, [w, h])
         br = np.clip(br, 0, [w, h])
+
+        # print("tl br: ", tl, br)
 
         # Fall back to full image if bounding box is invalid
         if tl[1] >= br[1] or tl[0] >= br[0]:
@@ -145,7 +151,7 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
 
         print(f"Pose {i}: Valid indices count = {valid_idx.numel()}")
 
-    print("Valid indices across all poses:", valid_idxs)
+    # print("Valid indices across all poses:", valid_idxs)
 
     return rays, valid_idxs, bbox_params, bboxes
 

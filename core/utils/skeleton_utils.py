@@ -1,6 +1,8 @@
 import numpy as np
 import plotly.graph_objects as go
 import h5py
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
 
 
 rat7m_joints = ['HeadF', 'HeadB', 'HeadL', 'SpineF', 'SpineM', 'SpineL', 'Offset1', 'Offset2', 
@@ -143,17 +145,19 @@ def sort_joints_by_hierarchy(parent_child_relationships, root_joint):
 
     return sorted_indices
 
-def get_rat_skeleton_transformation(kps, parent_child_relationships, root_joint=3):
+def get_rat_skeleton_transformation(kps, parent_child_relationships, rest_pose, root_joint=3):
     """
-    Computes local-to-world transformation matrices for each joint.
-    
+    Computes local-to-world transformation matrices for each joint based on the rest pose.
+
     Args:
-      kps: (N_joints, 3) array of 3D keypoints for each joint
+      kps: (N_joints, 3) array of 3D keypoints for each joint in the current frame
       parent_child_relationships: (dict) mapping each child joint to its parent joint.
+      rest_pose: (N_joints, 3) array of 3D coordinates for each joint in the rest position.
       root_joint: Index of the root joint.
-    
+
     Returns:
       l2ws: Local-to-world transformation matrices for each joint.
+      skts: World-to-local transformations (inverse of l2ws).
     """
     N_joints = kps.shape[0]
     l2ws = [None] * N_joints  # Initialize the list for storing transformations
@@ -164,24 +168,30 @@ def get_rat_skeleton_transformation(kps, parent_child_relationships, root_joint=
     # Process each joint in sorted order
     for i in sorted_indices:
         if i == root_joint:
-            # Root joint transformation (identity transformation, positioned at root)
+            # Root joint transformation (identity transformation, positioned at rest pose)
             root_T = np.eye(4)
-            root_T[:3, 3] = kps[i]  # Set root position in world space
+            root_T[:3, 3] = rest_pose[i]  # Set root position in world space
             l2ws[i] = root_T
         else:
+            # Parent transformation
             parent = parent_child_relationships[i]
-            vec = kps[i] - kps[parent]  # Vector from parent to child
-            local_rotation = create_local_coord(vec)[:3, :3]  # Compute local rotation matrix
+            
+            # Vector from parent to child in current and rest poses
+            vec_rest = rest_pose[i] - rest_pose[parent]  # Rest-pose direction
+            vec_current = kps[i] - kps[parent]  # Current direction
+            
+            # Local rotation to align rest direction with current direction
+            local_rotation = create_local_coord(vec_current)[:3, :3]
 
-            # Build the local transformation matrix
+            # Build the local transformation matrix based on the rest pose
             T = np.eye(4)
             T[:3, :3] = local_rotation  # Add rotation part
-            T[:3, 3] = vec  # Add translation part (relative position from parent to child)
+            T[:3, 3] = kps[i] - rest_pose[parent]  # Set translation to current position
 
-            # Compute the global transformation (parent's world transform @ local transform)
+            # Global transformation: parent's world transform @ local transform
             l2ws[i] = l2ws[parent] @ T
 
-    # Compute world-to-local transformations by inverting local-to-world
+    # Compute world-to-local transformations by inverting local-to-world matrices
     skts = np.array([np.linalg.inv(l2w) for l2w in l2ws])
 
     return skts, np.array(l2ws)
@@ -639,7 +649,7 @@ def plot_skeleton_3d(kps, parent_child_relationships, head_orientation='-y'):
 
 
 
-def get_kp_bounding_box(kp, extension=5.0):
+def get_kp_bounding_box(kp, extension=0.005):
     """
     Calculates bounding box parameters for keypoints in a single frame with an optional extension.
 
@@ -710,13 +720,72 @@ def plot_skeleton_3d_with_bounding_box(kps, bounding_boxes, parent_child_relatio
     fig.update_layout(scene=dict(xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z')))
     fig.show()
 
+# Function to visualize the 3D skeleton, bounding box, and project the bounding box to 2D
+def plot_skeleton_3d_with_bounding_box_and_2d_projection(kps, bounding_boxes, parent_child_relationships, hwf, poses):
+    fig_3d = go.Figure()
+    fig_2d = go.Figure()
+
+    # Plot keypoints, bounding box, and skeleton for each frame in 3D
+    for frame_idx, frame_kps in enumerate(kps):
+        x, y, z = frame_kps[:, 0], frame_kps[:, 1], frame_kps[:, 2]
+        fig_3d.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='markers', marker=dict(size=5, color='blue')))
+
+        # Extract bounding box parameters for this frame
+        bbox_params = bounding_boxes[frame_idx]
+        
+        # Get world-to-camera transformation
+        w2c = nerf_c2w_to_extrinsic(poses[frame_idx])
+
+        # Project bounding box to 2D
+        tl, br, pts_2d = box_to_2d(bbox_params, hwf, w2c)
+
+        # Plot the 3D bounding box
+        x_min, x_max, y_min, y_max, z_min, z_max = bbox_params
+        box_vertices = np.array([
+            [x_min, y_min, z_min], [x_max, y_min, z_min],
+            [x_max, y_max, z_min], [x_min, y_max, z_min],
+            [x_min, y_min, z_max], [x_max, y_min, z_max],
+            [x_max, y_max, z_max], [x_min, y_max, z_max]
+        ])
+        edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],
+            [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7]
+        ]
+        for edge in edges:
+            fig_3d.add_trace(go.Scatter3d(
+                x=[box_vertices[edge[0], 0], box_vertices[edge[1], 0]],
+                y=[box_vertices[edge[0], 1], box_vertices[edge[1], 1]],
+                z=[box_vertices[edge[0], 2], box_vertices[edge[1], 2]],
+                mode='lines',
+                line=dict(color='red', width=2)
+            ))
+
+        # Plot 2D projection of bounding box
+        fig_2d.add_trace(go.Scatter(x=[tl[0], br[0], br[0], tl[0], tl[0]],
+                                    y=[tl[1], tl[1], br[1], br[1], tl[1]],
+                                    mode='lines',
+                                    line=dict(color='green', width=2),
+                                    name=f"Frame {frame_idx}"))
+
+    # Update layout for 3D figure
+    fig_3d.update_layout(scene=dict(xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z')))
+
+    # Update layout for 2D figure
+    fig_2d.update_layout(xaxis=dict(title="Width"), yaxis=dict(title="Height", autorange="reversed"))
+
+    # Show the figures
+    fig_3d.show()
+    fig_2d.show()
+
 if __name__ == "__main__":
     # Example 3D keypoints for the rat skeleton (randomly generated for testing)
 
     with h5py.File("RatNeRF/A-NeRF-Rats/data/rats/rat7mdata.h5") as f:
-        kps = np.array(f["gt_kp3d"][:][:3])
-
-    print("Keypoints: ", kps)
+        kps = np.array(f["gt_kp3d"][:][0])
+        c2ws = np.array(f["c2ws"][:][0])
+        img_shape = np.array(f['img_shape'][:])
+        focals = np.array(f['focals'][:])
 
     # Initialize the RatSkeleton and get parent-child relationships
     rat_skt = RatSkeleton()
@@ -732,4 +801,3 @@ if __name__ == "__main__":
     # Output the resulting transformation matrices
     print(l2ws.shape)
     print(skts.shape)
-    

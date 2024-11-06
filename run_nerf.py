@@ -212,7 +212,7 @@ def config_parser():
 
     parser.add_argument("--N_rand", type=int, default=32*32*4,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=1e-4,
+    parser.add_argument("--lrate", type=float, default=5e-4,
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250,
                         help='exponential learning rate decay (in args.decay_unit (default=1000) steps)')
@@ -266,7 +266,7 @@ def config_parser():
                        help='to scale the density')
     parser.add_argument("--N_samples", type=int, default=64,
                         help='number of coarse samples per ray')
-    parser.add_argument("--N_importance", type=int, default=0,
+    parser.add_argument("--N_importance", type=int, default=16,
                         help='number of additional fine samples per ray')
     parser.add_argument("--perturb", type=float, default=1.,
                         help='set to 0. for no jitter, 1. for jitter')
@@ -276,7 +276,7 @@ def config_parser():
                         help='use full 5D input instead of 3D')
     parser.add_argument("--i_embed", type=int, default=0,
                         help='set 0 for default positional encoding, -1 for none')
-    parser.add_argument("--multires", type=int, default=25,
+    parser.add_argument("--multires", type=int, default=10,
                         help='log2 of max freq for positional encoding (kp encoding)')
     parser.add_argument("--multires_pts", type=int, default=5,
                         help='log2 of max freq for positional encoding (mapped location)')
@@ -373,7 +373,7 @@ def config_parser():
     parser.add_argument("--pts_tr_type", type=str, default="local",
                         help='type of transformation to apply on 3D world points')
 
-    parser.add_argument("--N_sample_images", type=int, default=8,
+    parser.add_argument("--N_sample_images", type=int, default=16,
                         help='number of images to sample rays from')
     parser.add_argument("--image_batching", action='store_true',
                         help='sample rays from N_sample images')
@@ -503,7 +503,7 @@ def train():
 
 
         # TODO: deal with this
-        if i == 10 or (i % args.i_testset==0 and i > 0):
+        if i == 1500 or (i % args.i_testset==0 and i > 0):
 
             kp_val = torch.tensor(render_data["kp3d"]).to(device)
             skt_val = torch.tensor(render_data["skts"]).to(device)

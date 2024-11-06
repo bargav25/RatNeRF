@@ -94,6 +94,10 @@ def load_data(args):
 
     dataset = BaseH5Dataset(h5_path="data/rats/rat7mdata.h5")
     
+    near, far = dataset.get_near_far(5)  # Get near and far for the first sample
+    print("Near:", near)
+    print("Far:", far)
+    
     # Main loop controls the iteration, so simply set N_iter to something > args.n_iters
     sampler = RayImageSampler(dataset, N_images=args.N_sample_images,
                               N_iter=args.n_iters + 10)
