@@ -121,23 +121,25 @@ def kp_to_valid_rays(poses, H, W, focal, kps=None, bbox_params=None,
         h = H if isinstance(H, int) else H[i]
         w = W if isinstance(W, int) else W[i]
 
-        # print("center: ", center)
+        print("center: ", center)
 
         ray_o, ray_d = get_rays(h, w, f, c2w, center=center)  # Generate rays
 
-        w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())  # World-to-camera transform
-        tl, br, _ = box_to_2d(bbox_param.cpu().numpy(), [h, w, f], w2c, center=center)  # Project bounding box to 2D
+        # w2c = nerf_c2w_to_extrinsic(c2w.cpu().numpy())  # World-to-camera transform
+        # tl, br, _ = box_to_2d(bbox_param.cpu().numpy(), [h, w, f], w2c, center=center)  # Project bounding box to 2D
 
-        # Clip bounding box to image dimensions
-        tl = np.clip(tl, 0, [w, h])
-        br = np.clip(br, 0, [w, h])
+        # # Clip bounding box to image dimensions
+        # tl = np.clip(tl, 0, [w, h])
+        # br = np.clip(br, 0, [w, h])
 
-        # print("tl br: ", tl, br)
+        # # print("tl br: ", tl, br)
 
-        # Fall back to full image if bounding box is invalid
-        if tl[1] >= br[1] or tl[0] >= br[0]:
-            print(f"Invalid bounding box for pose {i}. Using full image range.")
-            tl, br = [0, 0], [w, h]
+        # # Fall back to full image if bounding box is invalid
+        # if tl[1] >= br[1] or tl[0] >= br[0]:
+        #     print(f"Invalid bounding box for pose {i}. Using full image range.")
+        #     tl, br = [0, 0], [w, h]
+        
+        tl, br = [0,0], [w, h]
 
         # Create a grid of valid indices within the bounding box
         h_range = torch.arange(tl[1], br[1])
