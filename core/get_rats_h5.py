@@ -132,11 +132,16 @@ def main():
     focal, c2w = extract_focal_and_c2w(processed_data[0]['camera_matrices'])
     extrinsic_matrix = processed_data[0]['camera_matrices']['extrinsic']
 
+
+    c2w[:3, 3] /= 1000
+    focal /= 1000
+
     # Prepare data for H5 file
-    focals = [focal]
+    focals = [focal]    
     c2ws = [c2w]
-    gt_kp3d_world = [camera_to_world(item['pose_3d'], extrinsic_matrix) for item in tqdm(processed_data,  desc="Converting Camera Coordinates to World Coordinates")]
+    gt_kp3d_world = [camera_to_world(item['pose_3d'], extrinsic_matrix) / 1000 for item in tqdm(processed_data,  desc="Converting Camera Coordinates to World Coordinates")]
     
+    print("Focal length: ", focal)
     imgs = load_images(processed_data, valid_indices)
 
     num_imgs = len(processed_data)
@@ -154,12 +159,17 @@ def main():
     rat_skt = RatSkeleton()
     parent_child_relationships = rat_skt.get_parent_child_relationships()
 
-    skts = [get_rat_skeleton_transformation(kps, parent_child_relationships)[0] for kps in tqdm(gt_kp3d_world)]
+    rest_pose_kps = gt_kp3d_world[0]
 
+    skts = [get_rat_skeleton_transformation(kps, parent_child_relationships, rest_pose_kps)[0] for kps in tqdm(gt_kp3d_world)]
 
-
-    print(f"Masks shape: {masks.shape}")
-    print(f"Skts shape: {np.array(skts).shape}")
+    print("Focal length (meters):", focal)
+    print("First camera-to-world matrix (scaled):", c2w)
+    print("Sample ground truth keypoints (world coordinates):", gt_kp3d_world[0])
+    print("Number of images:", len(imgs))
+    print("Image shape:", img_shape)
+    print("Masks shape after bounding box application:", masks.shape)
+    print("Skeleton transformation shapes:", np.array(skts).shape)
 
     # Save data to H5 file
     with h5py.File(H5_PATH, 'w') as file:

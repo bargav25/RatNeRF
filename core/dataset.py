@@ -167,6 +167,33 @@ class BaseH5Dataset(Dataset):
             self.bg_idxs = dataset['bkgd_idxs'][:].astype(np.int64)
 
         dataset.close()
+        
+    def get_near_far(self, idx):
+        """
+        Computes near and far distances for ray sampling based on the 3D keypoints and camera position.
+        
+        Args:
+          idx: Index of the sample for which to calculate near and far values.
+        
+        Returns:
+          near, far: Calculated near and far distances for ray sampling.
+        """
+        # Retrieve camera transformation and position
+        c2w, _, _, _ = self.get_camera_data(idx, idx, self.N_samples)
+        camera_position = c2w[:3, 3]  # Camera position in world coordinates
+
+        # Retrieve 3D keypoints for this sample
+        kp3d = self.kp3d[idx]  # (N_joints, 3), keypoints in world coordinates
+
+        # Calculate distances from the camera to each keypoint
+        distances = np.linalg.norm(kp3d - camera_position, axis=1)
+
+        # Define near and far with a margin
+        margin = 0.1  # Adjust this as needed
+        near = max(0.1, distances.min() - margin)  # near must be positive
+        far = distances.max() + margin
+
+        return near, far
 
     def _load_pose_data(self, dataset):
         '''
@@ -180,7 +207,7 @@ class BaseH5Dataset(Dataset):
         '''
         read camera data from .h5 file
         '''
-        return dataset['focals'][:], dataset['c2ws'][:]
+        return dataset['focals'][:] * 1000, dataset['c2ws'][:]
 
     def get_camera_data(self, idx, q_idx, N_samples):
         '''
@@ -394,7 +421,7 @@ class BaseH5Dataset(Dataset):
             'hwf': hwf,
             'center': center,
             'c2ws': self.c2ws[c_idxs],
-            'near': 60., 'far': 100., # don't really need this
+            'near': 0.8, 'far': 2.5, # don't really need this
             'n_views': self.data_len,
             # skeleton-related info
             'gt_kp3d': self.gt_kp3d[k_idxs] if self.gt_kp3d is not None else None,
