@@ -17,4 +17,4 @@
 module load miniconda
 
 conda activate anerf
-python run_nerf.py --basedir logs --expname rats_model
+python run_nerf.py --config configs/rat.txt

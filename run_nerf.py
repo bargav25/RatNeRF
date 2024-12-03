@@ -262,7 +262,7 @@ def config_parser():
                         help='loss in yuv space instead of rgb')
 
     # rendering options
-    parser.add_argument("--density_scale", type=float, default=0.01,
+    parser.add_argument("--density_scale", type=float, default=1.0,
                        help='to scale the density')
     parser.add_argument("--N_samples", type=int, default=64,
                         help='number of coarse samples per ray')
@@ -428,9 +428,9 @@ def config_parser():
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_pose_weights", type=int, default=2000,
                         help='frequency of saving pose weights')
-    parser.add_argument("--i_testset", type=int, default=10000,
+    parser.add_argument("--i_testset", type=int, default=25000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=10000,
+    parser.add_argument("--i_video", type=int, default=25000,
                         help='frequency of render_poses video saving')
 
     # debug
