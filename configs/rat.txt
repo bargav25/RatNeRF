@@ -1,0 +1,25 @@
+expname = rat_default
+basedir = ./logs
+
+
+chunk = 4096
+
+image_batching = True
+N_sample_images = 128
+
+# network setting
+netwidth = 256
+netwidth_fine = 256
+multires = 7
+multires_views = 4
+
+# training setting
+N_rand = 2048
+N_samples = 64
+N_importance = 16
+n_iters = 100000
+lrate_decay = 500
+raw_noise_std = 1.0
+
+# logging
+i_testset = 10000
