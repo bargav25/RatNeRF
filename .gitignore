@@ -5,3 +5,6 @@ data/
 logs/
 # C extensions
 *.so
+
+# Ignore files with "train.sh.e*" pattern
+train.sh.e*
