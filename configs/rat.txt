@@ -2,10 +2,10 @@ expname = rat_default
 basedir = ./logs
 
 
-chunk = 4096
+chunk = 32768
 
 image_batching = True
-N_sample_images = 128
+N_sample_images = 32
 
 # network setting
 netwidth = 256
